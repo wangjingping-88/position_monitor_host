@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup><ProjectReference Include="..\..\src\PositionMonitor.Core\PositionMonitor.Core.csproj" /></ItemGroup>
+</Project>
