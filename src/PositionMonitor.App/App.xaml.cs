@@ -6,6 +6,7 @@ using System.IO;
 using System.Text.Json;
 using PositionMonitor.App.Services;
 using PositionMonitor.Core.Protocol;
+using PositionMonitor.Update;
 
 namespace PositionMonitor.App;
 
@@ -42,7 +43,9 @@ public partial class App : Application
             backdrop.Show(); window.Owner = backdrop; window.WindowStartupLocation = WindowStartupLocation.CenterOwner;
         }
         window.Show();
-        if (e.Args.Contains("--demo") || e.Args.Contains("--screenshot") && !e.Args.Contains("--empty")) window.Model.ToggleDemo();
+        await Dispatcher.InvokeAsync(window.UpdateLayout, DispatcherPriority.ContextIdle);
+        UpdateStartupConfirmation.TryConfirmFromCommandLine(e.Args, UpdatePaths.DefaultUpdateRoot, out var confirmationError);
+        if (confirmationError is not null) File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "启动异常.txt"), confirmationError);
         var verify = Array.IndexOf(e.Args, "--verify-mqtt");
         if (verify >= 0 && verify + 2 < e.Args.Length)
         {
@@ -56,6 +59,7 @@ public partial class App : Application
                     if (text.Foreground is not SolidColorBrush brush || brush.Color != (Color)ColorConverter.ConvertFromString(color)) throw new InvalidOperationException($"状态颜色错误：{name}，{text.Text}。");
                 }
                 foreach (var name in new[] { "RegistrationStatusText", "SensorStatusText", "GnssStatusText", "BatteryStatusText" }) VerifyStatusColor(name, "#A87508");
+                if (window.FindName("UpdateButton") is not System.Windows.Controls.Button { Content: "检查更新" } || window.Model.GetType().GetProperty("DemoCommand") is not null) throw new InvalidOperationException("检查更新入口缺失或离线演示未移除。");
                 window.Model.ApplySettings(new ConnectionSettings { Host = "127.0.0.1", Port = int.Parse(e.Args[verify + 1]), Topic = "ucchip/up/sgw/1001/#\nucchip/up/sgw/1002/#\nucchip/up/sgw/704154/#" }, "");
                 await window.Model.ToggleConnectionAsync();
                 var deadline = DateTime.UtcNow.AddSeconds(15);
@@ -308,11 +312,11 @@ public partial class App : Application
                 var control = new ControlWindow(window.Model) { Owner = window };
                 control.Show(); control.UpdateLayout(); Capture(control, Path.ChangeExtension(output, ".控制.png")); control.Close();
                 var records = window.Model.SelectedDevice.State.History.Count;
+                if (!window.Model.BeginApplicationUpdate(out _) || window.Model.CanSendControl || window.Model.CanOperate) throw new InvalidOperationException("准备更新时未冻结控制及连接操作。");
+                window.Model.CancelApplicationUpdate();
+                if (!window.Model.CanSendControl || !window.Model.CanOperate) throw new InvalidOperationException("取消更新后未恢复操作。");
                 await window.Model.StopSessionAsync();
-                window.Model.ToggleDemo();
-                if (window.Model.DeviceCount != 3) throw new InvalidOperationException("演示设备未隔离。");
-                window.Model.ToggleDemo();
-                if (window.Model.DeviceCount != 4 || window.Model.GatewayCount != 3 || window.Model.SelectedGateway?.Id != "1001" || window.Model.SelectedDevice?.State.History.Count != records || window.Model.HeartbeatCount != 4 || window.Model.Operations.Count != 5 || InfoText("AppVersionText") != "V1.2.4") throw new InvalidOperationException("退出演示丢失真实分组、数据或下行记录。");
+                if (window.Model.DeviceCount != 4 || window.Model.GatewayCount != 3 || window.Model.SelectedGateway?.Id != "1001" || window.Model.SelectedDevice?.State.History.Count != records || window.Model.HeartbeatCount != 4 || window.Model.Operations.Count != 5 || InfoText("AppVersionText") != "V1.2.4") throw new InvalidOperationException("断开连接丢失真实分组、数据或下行记录。");
                 var chrome = System.Windows.Shell.WindowChrome.GetWindowChrome(window);
                 if (chrome is null || chrome.CaptionHeight != 64 || chrome.ResizeBorderThickness.Left <= 0 || !System.Windows.Shell.WindowChrome.GetIsHitTestVisibleInChrome((FrameworkElement)window.FindName("HeaderActions"))) throw new InvalidOperationException("顶部拖动、缩放或菜单点击区域未正确配置。");
                 await Dispatcher.InvokeAsync(window.UpdateLayout, DispatcherPriority.ContextIdle);
@@ -361,6 +365,13 @@ public partial class App : Application
             await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
             var path = Path.GetFullPath(e.Args[index + 1]);
             Window target = window;
+            if (e.Args.Contains("--update-preview"))
+            {
+                var update = new UpdateWindow(window) { Owner = window };
+                target = update;
+                update.Show();
+                await update.CheckAsync();
+            }
             if (e.Args.Contains("--settings-preview"))
             {
                 target = new ConnectionWindow(window.Model.Settings, "") { Owner = window };

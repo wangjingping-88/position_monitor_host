@@ -127,11 +127,9 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     private string _search = "";
     private string _password = "";
     private string? _connectionIdentity;
-    private LiveSnapshot? _liveSnapshot;
-    private string _status = "填写连接设置后连接服务器，或点击离线演示预览。";
-    private bool _demo, _busy, _dataDirty, _heartbeatDirty;
-    private int _demoTick = 120, _rangeIndex, _ackSequence = Random.Shared.Next(1000, 1000000), _packetNumber;
-    private DateTimeOffset _nextDemo;
+    private string _status = "填写连接设置后连接服务器。";
+    private bool _busy, _dataDirty, _heartbeatDirty, _preparingUpdate;
+    private int _rangeIndex, _ackSequence = Random.Shared.Next(1000, 1000000), _packetNumber;
     private long _received, _errors, _duplicates, _dropped;
     public ConnectionSettings Settings { get; private set; }
     public ICollectionView DevicesView { get; }
@@ -142,7 +140,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public ObservableCollection<LogRow> Logs { get; } = [];
     public ObservableCollection<LogRow> DownlinkLogs { get; } = [];
     public ObservableCollection<ControlOperation> Operations { get; } = [];
-    public bool CanSendControl => !_demo && _session?.IsSubscribed == true;
+    public bool CanSendControl => !_preparingUpdate && _session?.IsSubscribed == true;
     public GatewayItem? SelectedGateway
     {
         get => _selectedGateway;
@@ -175,7 +173,6 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
     public string HeartbeatTooltip => _heartbeats.Count == 0 ? "只统计主题与 src 一致的实时网关心跳；保留消息不计数。" : string.Join("\n", Heartbeats.Select(h => $"网关 {IdentifierDisplay.Format(h.Gateway)}：{h.Count} 次，最近 {h.Time}"));
     public IReadOnlyList<SampleRecord> ChartRecords { get; private set; } = [];
     public IReadOnlyList<SampleRow> SampleRows { get; private set; } = [];
-    public ActionCommand DemoCommand { get; }
 
     public MainViewModel()
     {
@@ -190,7 +187,6 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         DownstreamView.Filter = obj => obj is LogRow row && row.GatewayKey == SelectedGateway?.Key && (row.DeviceKey is null || row.DeviceKey == SelectedDevice?.State.Key);
         OperationsView = CollectionViewSource.GetDefaultView(Operations);
         OperationsView.Filter = obj => obj is ControlOperation operation && $"{operation.Request.Company}/sgw/{operation.Request.Gateway}" == SelectedGateway?.Key && (operation.Request.Kind == ControlKind.Wake || operation.Request.DeviceKey == SelectedDevice?.State.Key);
-        DemoCommand = new(ToggleDemo, () => CanDemo);
         _ackWorker = Task.Run(AcknowledgeLoopAsync);
         _timer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(250) };
         _timer.Tick += (_, _) => Tick();
@@ -199,27 +195,30 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
 
     public string Password => _password;
     public string Status => _status;
-    public string ShortStatus => _demo ? "离线演示" : _session?.IsSubscribed == true ? "已订阅" : _session is not null ? "连接中 / 重连" : "未连接";
-    public string StatusBackground => _demo ? "#FFF3DB" : _session?.IsSubscribed == true ? "#E2F3EF" : "#EAF0F3";
-    public string StatusForeground => _demo ? "#8D5D0C" : _session?.IsSubscribed == true ? "#087F78" : "#607780";
+    public string ShortStatus => _session?.IsSubscribed == true ? "已订阅" : _session is not null ? "连接中 / 重连" : "未连接";
+    public string StatusBackground => _session?.IsSubscribed == true ? "#E2F3EF" : "#EAF0F3";
+    public string StatusForeground => _session?.IsSubscribed == true ? "#087F78" : "#607780";
     public string ConnectLabel => _session is null ? "连接服务器" : "断开连接";
-    public string DemoLabel => _demo ? "退出演示" : "离线演示";
-    public bool CanOperate => !_busy;
-    public bool CanDemo => !_busy && _session is null;
+    public bool CanOperate => !_busy && !_preparingUpdate;
+    public bool BeginApplicationUpdate(out string reason)
+    {
+        if (!CanOperate) { reason = "当前正在连接或准备更新，请稍后再试。"; return false; }
+        if (Operations.Any(o => !o.Completed)) { reason = "有下行命令正在等待响应，请等待执行完成后再更新。"; return false; }
+        _preparingUpdate = true; Refresh(); reason = ""; return true;
+    }
+    public void CancelApplicationUpdate() { _preparingUpdate = false; Refresh(); }
     public bool HasSession => _session is not null;
-    public string ModeLabel => _demo ? "离线演示模式" : "MQTT 订阅";
+    public string ModeLabel => "MQTT 订阅";
     public string Subscription
     {
         get
         {
-            if (_demo) return "3 台模拟终端，每 2 秒更新";
             var topics = Settings.Topic.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries).Select(t => t.Trim()).Where(t => t.Length > 0).Distinct(StringComparer.Ordinal).ToArray();
             return string.Join(Environment.NewLine, topics.Take(3)) + (topics.Length > 3 ? $"\n… 共 {topics.Length} 个主题" : "");
         }
     }
     public int DeviceCount => _devices.Count;
     public Visibility NoDevicesVisibility => DevicesView.IsEmpty ? Visibility.Visible : Visibility.Collapsed;
-    public Visibility DemoVisibility => _demo ? Visibility.Visible : Visibility.Collapsed;
     public string Counters => $"接收 {_received}   重复 {_duplicates}   异常 {_errors}   队列丢弃 {Interlocked.Read(ref _dropped)}";
     public string Search
     {
@@ -290,7 +289,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
 
     public async Task ToggleConnectionAsync()
     {
-        if (_busy) return;
+        if (!CanOperate) return;
         _busy = true; Refresh();
         try
         {
@@ -298,7 +297,6 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
             else
             {
                 Settings.Validate(_password);
-                if (_demo) { _demo = false; RestoreLive(); }
                 var identity = $"{Settings.UseTls}/{Settings.Host.ToLowerInvariant()}/{Settings.Port}/{Settings.UserName}";
                 if (_connectionIdentity is not null && _connectionIdentity != identity) Clear();
                 _connectionIdentity = identity;
@@ -329,59 +327,6 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         Refresh();
     }
 
-    public void ToggleDemo()
-    {
-        if (!CanDemo) return;
-        _demo = !_demo;
-        if (_demo)
-        {
-            _liveSnapshot = new(_devices.ToArray(), Logs.ToArray(), _selectedDevice?.State.Key, _search, _received, _errors, _duplicates, _dropped, new(_heartbeats), Gateways.ToArray(), _selectedGateway?.Key, DownlinkLogs.ToArray(), Operations.ToArray());
-            Clear(); _search = ""; DevicesView.Refresh();
-            var now = DateTimeOffset.UtcNow;
-            for (var device = 0; device < 3; device++)
-            {
-                Process(DemoData.Registration(device), now.AddMinutes(-4));
-                Process(DemoData.Period(device), now.AddMinutes(-4));
-                for (var tick = 0; tick < 120; tick++) Process(DemoData.Report(device, tick, now.AddSeconds(-240 + tick * 2)), now.AddSeconds(-240 + tick * 2));
-            }
-            foreach (var gateway in new[] { 1001, 1002 })
-            {
-                Process(new($"ucchip/up/sgw/{gateway}/0", Encoding.UTF8.GetBytes($"{{\"cmd\":0,\"src\":{gateway},\"hw_ver\":\"V1.0\",\"sw_ver\":\"V1.5\"}}")), now);
-                Process(new($"ucchip/up/sgw/{gateway}/0", Encoding.UTF8.GetBytes($"{{\"cmd\":201,\"dev_id\":{0x12345678u + (gateway == 1001 ? 0u : 2u)},\"status\":1}}")), now);
-                Process(new($"ucchip/up/sgw/{gateway}/0", Encoding.UTF8.GetBytes($"{{\"cmd\":1,\"src\":{gateway}}}")), now);
-            }
-            _demoTick = 120;
-            _nextDemo = now;
-            _status = "离线演示已启动；所有终端和采样均为模拟数据。";
-        }
-        else { RestoreLive(); _status = "演示已退出，真实数据缓存已恢复。"; }
-        UpdateSelection(); Refresh();
-    }
-
-    private void RestoreLive()
-    {
-        var snapshot = _liveSnapshot;
-        _liveSnapshot = null;
-        Clear();
-        if (snapshot is null) return;
-        foreach (var gateway in snapshot.Gateways) { _gatewayMap.Add(gateway.Key, gateway); Gateways.Add(gateway); }
-        _selectedGateway = snapshot.Gateways.FirstOrDefault(g => g.Key == snapshot.GatewayKey) ?? Gateways.FirstOrDefault();
-        foreach (var item in snapshot.Devices) { _deviceMap.Add(item.State.Key, item); _devices.Add(item); }
-        foreach (var log in snapshot.Logs) Logs.Add(log);
-        _search = snapshot.Search; DevicesView.Refresh();
-        if (snapshot.SelectedKey is not null) _deviceMap.TryGetValue(snapshot.SelectedKey, out _selectedDevice);
-        _selectedLog = Logs.FirstOrDefault();
-        _received = snapshot.Received; _errors = snapshot.Errors; _duplicates = snapshot.Duplicates; _dropped = snapshot.Dropped;
-        foreach (var pair in snapshot.Heartbeats) _heartbeats.Add(pair.Key, pair.Value);
-        foreach (var log in snapshot.DownlinkLogs) DownlinkLogs.Add(log);
-        foreach (var operation in snapshot.Operations) Operations.Add(operation);
-        _selectedGatewayLog = SelectedGateway?.Messages.FirstOrDefault();
-    }
-
-    private sealed record LiveSnapshot(DeviceItem[] Devices, LogRow[] Logs, string? SelectedKey, string Search,
-        long Received, long Errors, long Duplicates, long Dropped, Dictionary<string, HeartbeatState> Heartbeats,
-        GatewayItem[] Gateways, string? GatewayKey, LogRow[] DownlinkLogs, ControlOperation[] Operations);
-
     private void Clear()
     {
         _deviceMap.Clear(); _devices.Clear(); Logs.Clear(); _heartbeats.Clear(); _gatewayMap.Clear(); Gateways.Clear(); DownlinkLogs.Clear(); Operations.Clear();
@@ -395,14 +340,6 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         var changed = false;
         var statusChanged = false;
         while (_notices.TryDequeue(out var notice)) { _status = notice; changed = statusChanged = true; }
-        if (_demo && DateTimeOffset.UtcNow >= _nextDemo)
-        {
-            var now = DateTimeOffset.UtcNow;
-            for (var device = 0; device < 3; device++) Process(DemoData.Report(device, _demoTick, now), now);
-            Process(new("ucchip/up/sgw/1001/0", Encoding.UTF8.GetBytes("{\"cmd\":1,\"src\":1001}")), now);
-            Process(new("ucchip/up/sgw/1002/0", Encoding.UTF8.GetBytes("{\"cmd\":1,\"src\":1002}")), now);
-            _demoTick++; _nextDemo = now.AddSeconds(2); changed = true;
-        }
         for (var i = 0; i < 100 && _incoming.Reader.TryRead(out var item); i++) { Process(item.Message, item.Time); changed = true; }
         foreach (var device in _devices) device.Update();
         foreach (var operation in Operations.Where(o => !o.Completed && DateTimeOffset.UtcNow - o.Created > TimeSpan.FromSeconds(o.Request.Paging is null ? 60 : 90)).ToArray())
@@ -422,7 +359,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         _received++;
         try
         {
-            var messages = _demo || Settings.PayloadMode == PayloadMode.Auto ? GatewayPayload.Split(message) : [message];
+            var messages = Settings.PayloadMode == PayloadMode.Auto ? GatewayPayload.Split(message) : [message];
             foreach (var part in messages) ProcessPayload(part, received, message);
         }
         catch (Exception error) when (error is InvalidDataException or System.Text.Json.JsonException)
@@ -448,7 +385,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
         string? deviceKey = null, gatewayKey = null;
         try
         {
-            var packet = (_demo || Settings.PayloadMode == PayloadMode.Auto) ? GatewayPacket.Decode(message) : null;
+            var packet = (Settings.PayloadMode == PayloadMode.Auto) ? GatewayPacket.Decode(message) : null;
             var gateway = packet is null ? null : EnsureGateway(packet.Key, packet.Company, packet.Gateway.ToString());
             gatewayKey = gateway?.Key;
             gateway?.Receive(received, message.Retain);
@@ -457,7 +394,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
                 gateway.Version = $"硬件 {TextField(packet, "hw_ver")} / 固件 {TextField(packet, "sw_ver")}";
                 gateway.Update();
             }
-            var gatewayNotice = (_demo || Settings.PayloadMode == PayloadMode.Auto) ? GatewayNotice.Decode(message) : null;
+            var gatewayNotice = (Settings.PayloadMode == PayloadMode.Auto) ? GatewayNotice.Decode(message) : null;
             if (gatewayNotice is not null)
             {
                 if (gatewayNotice.Heartbeat && !message.Retain)
@@ -501,7 +438,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
                 }
                 return;
             }
-            var envelope = EnvelopeDecoder.Decode(message, _demo ? PayloadMode.Auto : Settings.PayloadMode);
+            var envelope = EnvelopeDecoder.Decode(message, Settings.PayloadMode);
             if (envelope is null) return;
             device = envelope.Source is { } address ? IdentifierDisplay.Format(address) : envelope.DeviceLabel;
             detail += $"终端：{device}\n";
@@ -530,7 +467,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
                     .Where(s => s is not null).Concat(frame.Destinations.Select(id => $"目标终端 {IdentifierDisplay.Tooltip(id)}")))
             });
             // 重发注册也必须回执；保留消息不得触发回执。
-            if (!_demo && Settings.AutoAck && frame.NeedsAcknowledgment && !message.Retain && _session is { } session)
+            if (Settings.AutoAck && frame.NeedsAcknowledgment && !message.Retain && _session is { } session)
             {
                 var reply = envelope.Acknowledgment(frame, ++_ackSequence, Settings.RawReplyTopic);
                 if (reply is null) _status = "收到要求确认的报文，但无法确定回执路由，请配置直接透传回执主题。";
@@ -550,7 +487,7 @@ public sealed class MainViewModel : Observable, IAsyncDisposable
 
     public async Task SendControlAsync(ControlRequest request)
     {
-        if (!CanSendControl || _session is not { } session) throw new InvalidOperationException("请先连接并完成订阅；离线演示不能发送控制命令。");
+        if (!CanSendControl || _session is not { } session) throw new InvalidOperationException("请先连接并完成订阅，且不要在更新期间发送控制命令。");
         for (var attempts = 0; attempts < 255; attempts++)
         {
             _packetNumber = _packetNumber % 255 + 1;

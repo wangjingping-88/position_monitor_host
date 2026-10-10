@@ -10,5 +10,6 @@
     <ApplicationIcon>Assets\PositionMonitor.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="..\PositionMonitor.Core\PositionMonitor.Core.csproj" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="..\PositionMonitor.Update\PositionMonitor.Update.csproj" /></ItemGroup>
   <ItemGroup><Resource Include="Assets\PositionMonitor.ico" /></ItemGroup>
 </Project>

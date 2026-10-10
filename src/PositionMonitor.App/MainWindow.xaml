@@ -26,10 +26,10 @@
         <Border x:Name="NativeCaptionFill" Grid.Column="3" Background="White" Height="32" VerticalAlignment="Bottom"/>
         <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="22,0,0,0"><Border Background="{StaticResource Accent}" CornerRadius="9" Width="40" Height="40" Margin="0,0,12,0" ToolTip="倾角定位监测仪" AutomationProperties.Name="倾角定位监测仪"><TextBlock Text="∠" Foreground="White" FontFamily="Segoe UI" FontSize="28" HorizontalAlignment="Center"/></Border><StackPanel VerticalAlignment="Center"><TextBlock Text="倾角定位监测仪" FontSize="22" FontWeight="SemiBold"/><TextBlock Text="网关与终端分层查看，上下行独立操作" Style="{StaticResource Caption}" Margin="0,4,0,0"/></StackPanel></StackPanel>
         <StackPanel x:Name="HeaderActions" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0" shell:WindowChrome.IsHitTestVisibleInChrome="True">
-          <Button x:Name="SettingsButton" Content="连接设置" Click="SettingsClick" Padding="12,8" Margin="0,0,6,0"/>
+          <Button x:Name="SettingsButton" Content="连接设置" Click="SettingsClick" IsEnabled="{Binding CanOperate}" Padding="12,8" Margin="0,0,6,0"/>
           <Button x:Name="ConnectButton" Content="{Binding ConnectLabel}" Click="ConnectClick" Style="{StaticResource Primary}" IsEnabled="{Binding CanOperate}" Padding="12,8" Margin="0,0,6,0"/>
           <Border Background="{Binding StatusBackground}" MinWidth="92" CornerRadius="10" Padding="10,6" Margin="0,0,6,0"><TextBlock Text="{Binding ShortStatus}" Foreground="{Binding StatusForeground}" HorizontalAlignment="Center"/></Border>
-          <Button Content="{Binding DemoLabel}" Command="{Binding DemoCommand}" IsEnabled="{Binding CanDemo}" Padding="12,8" Margin="0,0,6,0"/>
+          <Button x:Name="UpdateButton" Content="检查更新" Click="UpdateClick" IsEnabled="{Binding CanOperate}" Padding="12,8" Margin="0,0,6,0"/>
         </StackPanel>
       </Grid>
     </Border>
@@ -83,7 +83,6 @@
               </Grid>
               <ScrollViewer Height="34" Margin="0,5,0,5" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><TextBlock Text="{Binding DeviceConfigurationSummary}" ToolTip="{Binding ConfigurationDetails}" Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,0,8,0" VerticalAlignment="Top"/></ScrollViewer>
               <DockPanel><TextBlock Text="{Binding ReceiptTime}" FontSize="10" Foreground="{StaticResource Muted}"/><TextBlock Text="{Binding Freshness}" FontSize="10" Foreground="{StaticResource Accent}" HorizontalAlignment="Right"/></DockPanel>
-              <TextBlock Text="离线演示数据" Visibility="{Binding DemoVisibility}" Foreground="#8D5D0C" FontSize="10" Margin="0,4,0,0"/>
             </StackPanel>
           </Border>
           <TabControl Grid.Row="2" x:Name="DetailsTabs" Background="White" BorderThickness="0" SelectionChanged="UpstreamTabChanged">

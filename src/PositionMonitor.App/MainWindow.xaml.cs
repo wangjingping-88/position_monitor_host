@@ -11,6 +11,14 @@ public partial class MainWindow : Window
 {
     public MainViewModel Model { get; } = new();
     private bool _closing, _closed;
+    private UpdateWindow? _updateWindow;
+    private async void UpdateClick(object sender, RoutedEventArgs e)
+    {
+        if (_updateWindow is { IsVisible: true }) { _updateWindow.Activate(); return; }
+        _updateWindow = new UpdateWindow(this) { Owner = this };
+        _updateWindow.Show();
+        await _updateWindow.CheckAsync();
+    }
     public MainWindow()
     {
         InitializeComponent();
